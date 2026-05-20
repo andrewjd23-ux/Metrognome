@@ -8,8 +8,8 @@
 //
 // Confirmed onboard OLED:
 //   72x40 monochrome OLED, I2C address 0x3C
-//   SCL -> GPIO5
-//   SDA -> GPIO6
+//   SDA -> GPIO5
+//   SCL -> GPIO6
 //
 // Confirmed external OLED4SPI wiring:
 //   OLED GND -> ESP32 GND
@@ -20,8 +20,8 @@
 //   OLED DC  -> GPIO9
 //   OLED CS  -> GPIO10
 
-constexpr uint8_t PIN_I2C_SCL  = 5;
-constexpr uint8_t PIN_I2C_SDA  = 6;
+constexpr uint8_t PIN_I2C_SDA  = 5;
+constexpr uint8_t PIN_I2C_SCL  = 6;
 
 constexpr uint8_t PIN_SPI_SCK  = 4;
 constexpr uint8_t PIN_SPI_MOSI = 7;
@@ -29,13 +29,11 @@ constexpr uint8_t PIN_BIG_RST  = 8;
 constexpr uint8_t PIN_BIG_DC   = 9;
 constexpr uint8_t PIN_BIG_CS   = 10;
 
-// Small built-in display. This constructor matches the 72x40 onboard OLED.
 U8G2_SSD1306_72X40_ER_F_HW_I2C smallDisplay(
   U8G2_R0,
   U8X8_PIN_NONE
 );
 
-// Big external display. Confirmed working as SSD1306 128x64 SPI.
 U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI bigDisplay(
   U8G2_R0,
   PIN_BIG_CS,
@@ -48,14 +46,13 @@ uint32_t lastDrawMs = 0;
 
 void drawSmallStatus() {
   smallDisplay.clearBuffer();
-
   smallDisplay.setFont(u8g2_font_4x6_tf);
-  smallDisplay.drawStr(0, 6, "METROGNOME");
-  smallDisplay.drawStr(0, 15, "WiFi: TEST");
-  smallDisplay.drawStr(0, 24, "API : IDLE");
-  smallDisplay.drawStr(0, 33, "BIG : OK");
 
-  // Tiny heartbeat pixel so we know it is refreshing.
+  smallDisplay.drawStr(0, 6, "METROGNOME");
+  smallDisplay.drawStr(0, 15, "WiFi TEST");
+  smallDisplay.drawStr(0, 24, "API  IDLE");
+  smallDisplay.drawStr(0, 33, "BIG  OK");
+
   if ((frame / 4) % 2 == 0) {
     smallDisplay.drawBox(66, 0, 5, 5);
   } else {
@@ -86,7 +83,6 @@ void drawBigWeatherMock() {
   bigDisplay.print("Sea 0.8m  Frame ");
   bigDisplay.print(frame);
 
-  // Moving marker: future home of scanline/barometer animation nonsense.
   uint8_t x = (frame * 2) % 120;
   bigDisplay.drawBox(x, 13, 8, 3);
 
@@ -99,17 +95,16 @@ void setup() {
   Serial.println();
   Serial.println("Metrognome dual OLED test starting...");
 
-  // Start I2C for the onboard OLED first.
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  smallDisplay.setI2CAddress(0x3C * 2); // U8g2 uses 8-bit I2C address form
+  Wire.setClock(100000);
+  smallDisplay.setI2CAddress(0x3C * 2);
   smallDisplay.begin();
   smallDisplay.setContrast(180);
-  Serial.println("Small onboard OLED started on GPIO5/6.");
+  Serial.println("Small onboard OLED started: SDA GPIO5, SCL GPIO6.");
 
-  // Start SPI for the external OLED.
   SPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, PIN_BIG_CS);
   bigDisplay.begin();
-  bigDisplay.setBusClock(1000000); // gentle 1 MHz while testing jumper wires
+  bigDisplay.setBusClock(1000000);
   bigDisplay.setContrast(200);
   Serial.println("Big external SPI OLED started on GPIO4/7/8/9/10.");
 
@@ -140,9 +135,9 @@ Expected result:
 
   Small onboard OLED:
     METROGNOME
-    WiFi: TEST
-    API : IDLE
-    BIG : OK
+    WiFi TEST
+    API  IDLE
+    BIG  OK
 
   Big external OLED:
     METROGNOME WEATHER
