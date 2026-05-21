@@ -12,8 +12,8 @@ constexpr uint8_t PIN_ENC_CLK=0, PIN_ENC_DT=1, PIN_ENC_SW=2;
 U8G2_SSD1306_72X40_ER_F_HW_I2C smallDisplay(U8G2_R0, U8X8_PIN_NONE);
 U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI bigDisplay(U8G2_R0, PIN_BIG_CS, PIN_BIG_DC, PIN_BIG_RST);
 
-enum Page:uint8_t{WEATHER,SEA,TIDE,MOON,SYSTEM,PAGE_COUNT};
-const char* pageNames[PAGE_COUNT]={"WEATHER","SEA","TIDE","MOON","SYSTEM"};
+enum Page:uint8_t{WEATHER,SEA,TIDE,MOON,LIGHTNING,SYSTEM,PAGE_COUNT};
+const char* pageNames[PAGE_COUNT]={"WEATHER","SEA","TIDE","MOON","LIGHT","SYSTEM"};
 Page page=WEATHER;
 
 uint32_t frame=0,lastDraw=0,lastButton=0,pressUntil=0,lastWifiCheck=0;
@@ -22,6 +22,16 @@ bool buttonDown=false, pressNotice=false;
 bool wifiOk=false;
 String wifiStatus="BOOT";
 String connectedSsid="";
+
+struct LightningData{
+  bool active=true;
+  int strikeCount=12;
+  float nearestKm=34.0;
+  const char* direction="NW";
+  int risk=3;
+};
+
+LightningData lightning;
 
 void smallStatus();
 void drawBig();
@@ -141,6 +151,24 @@ void drawMoon(){
   bigDisplay.drawCircle(104,38,18); bigDisplay.drawDisc(110,38,16); bigDisplay.sendBuffer();
 }
 
+void drawLightning(){
+  bigDisplay.clearBuffer(); header("LIGHT");
+  bigDisplay.setFont(u8g2_font_6x12_tf);
+  bigDisplay.drawStr(0,27,"Nearest strike");
+  bigDisplay.setFont(u8g2_font_7x14B_tf);
+  bigDisplay.setCursor(0,45); bigDisplay.print(lightning.direction); bigDisplay.print(" "); bigDisplay.print(lightning.nearestKm,0); bigDisplay.print("km");
+  bigDisplay.setFont(u8g2_font_6x10_tf);
+  bigDisplay.setCursor(0,60); bigDisplay.print(lightning.strikeCount); bigDisplay.print(" strikes/hr  RISK HIGH");
+
+  bigDisplay.drawCircle(103,38,21); bigDisplay.drawCircle(103,38,12);
+  bigDisplay.drawLine(103,17,103,59); bigDisplay.drawLine(82,38,124,38);
+  uint8_t pulse=(frame*3)%18;
+  bigDisplay.drawCircle(103,38,pulse+2);
+  int sx=96+((frame*5)%18); int sy=25+((frame*7)%25);
+  bigDisplay.drawLine(sx,sy,sx-5,sy+8); bigDisplay.drawLine(sx-5,sy+8,sx+1,sy+8); bigDisplay.drawLine(sx+1,sy+8,sx-6,sy+18);
+  bigDisplay.sendBuffer();
+}
+
 void drawSystem(){
   bigDisplay.clearBuffer(); header("SYSTEM"); bigDisplay.setFont(u8g2_font_6x10_tf);
   bigDisplay.setCursor(0,25); bigDisplay.print("WiFi: "); bigDisplay.print(wifiStatus);
@@ -151,11 +179,11 @@ void drawSystem(){
 }
 
 void drawBig(){
-  switch(page){case WEATHER:drawWeather();break;case SEA:drawSea();break;case TIDE:drawTide();break;case MOON:drawMoon();break;case SYSTEM:drawSystem();break;default:drawWeather();break;}
+  switch(page){case WEATHER:drawWeather();break;case SEA:drawSea();break;case TIDE:drawTide();break;case MOON:drawMoon();break;case LIGHTNING:drawLightning();break;case SYSTEM:drawSystem();break;default:drawWeather();break;}
 }
 
 void setup(){
-  Serial.begin(115200); delay(1000); Serial.println("Metrognome main WiFi fallback sketch");
+  Serial.begin(115200); delay(1000); Serial.println("Metrognome main WiFi fallback sketch + lightning page");
   pinMode(PIN_ENC_CLK,INPUT_PULLUP); pinMode(PIN_ENC_DT,INPUT_PULLUP); pinMode(PIN_ENC_SW,INPUT_PULLUP); lastClk=digitalRead(PIN_ENC_CLK);
   Wire.begin(PIN_I2C_SDA,PIN_I2C_SCL); Wire.setClock(100000); smallDisplay.setI2CAddress(0x3C*2); smallDisplay.begin(); smallDisplay.setContrast(180);
   SPI.begin(PIN_SPI_SCK,-1,PIN_SPI_MOSI,PIN_BIG_CS); bigDisplay.begin(); bigDisplay.setBusClock(1000000); bigDisplay.setContrast(200);
