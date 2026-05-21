@@ -73,6 +73,20 @@ float firstSource(JsonVariant v) {
   return NAN;
 }
 
+String readHttpBodyManually(HTTPClient& http, uint32_t timeoutMs=10000){
+  String payload="";
+  WiFiClient* stream=http.getStreamPtr();
+  uint32_t lastDataMs=millis();
+  while(http.connected() && millis()-lastDataMs<timeoutMs){
+    while(stream->available()){
+      payload += char(stream->read());
+      lastDataMs=millis();
+    }
+    delay(10);
+  }
+  return payload;
+}
+
 String utcDate() {
   struct tm t;
   if (!getLocalTime(&t)) return "";
@@ -199,21 +213,34 @@ bool fetchStormglass() {
   client.setInsecure();
   HTTPClient http;
   String url = stormglassUrl();
+  http.setTimeout(15000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.useHTTP10(true);
   if (!http.begin(client, url)) {
     apiStatus="HTTP";
     return false;
   }
   http.addHeader("Authorization", STORMGLASS_API_KEY);
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
   int code = http.GET();
+  Serial.print("Stormglass HTTP code: "); Serial.println(code);
+  Serial.print("Stormglass HTTP size: "); Serial.println(http.getSize());
   if (code != 200) {
-    Serial.print("Stormglass HTTP error: "); Serial.println(code);
     http.end();
     apiStatus="ERR";
     return false;
   }
 
-  String payload = http.getString();
+  String payload = readHttpBodyManually(http,10000);
   http.end();
+  Serial.print("Stormglass payload length: "); Serial.println(payload.length());
+  Serial.println(payload.substring(0,300));
+  if (payload.length()==0) {
+    apiStatus="EMPTY";
+    return false;
+  }
+
   DynamicJsonDocument doc(24576);
   DeserializationError err = deserializeJson(doc, payload);
   if (err) {
