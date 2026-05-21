@@ -189,10 +189,26 @@ void syncTime() {
 }
 
 String stormglassUrl() {
+  time_t now;
+  time(&now);
+
+  struct tm *utc = gmtime(&now);
+  char startBuf[32];
+  char endBuf[32];
+
+  strftime(startBuf, sizeof(startBuf), "%Y-%m-%dT%H:00:00Z", utc);
+
+  now += 3 * 3600;
+  utc = gmtime(&now);
+  strftime(endBuf, sizeof(endBuf), "%Y-%m-%dT%H:00:00Z", utc);
+
   return String("https://api.stormglass.io/v2/weather/point?lat=") +
          String(METROGNOME_LAT, 6) +
          "&lng=" + String(METROGNOME_LON, 6) +
-         "&params=airTemperature,pressure,humidity,windSpeed,windDirection,waveHeight,swellPeriod,waterTemperature";
+         "&params=airTemperature,pressure,humidity,windSpeed,windDirection,waveHeight,swellPeriod,waterTemperature" +
+         "&source=sg" +
+         "&start=" + String(startBuf) +
+         "&end=" + String(endBuf);
 }
 
 bool fetchStormglass() {
@@ -213,6 +229,7 @@ bool fetchStormglass() {
   client.setInsecure();
   HTTPClient http;
   String url = stormglassUrl();
+  Serial.println(url);
   http.setTimeout(15000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.useHTTP10(true);
