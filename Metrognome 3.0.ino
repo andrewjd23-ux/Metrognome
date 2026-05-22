@@ -230,13 +230,15 @@ bool fetchTideGauge(){
   apiStatus="TIDE";
   smallStatus();drawBig();
 
-  WiFiClient client;
+  WiFiClientSecure client;
+  client.setInsecure();
   HTTPClient http;
 
   String url=String(EA_TIDE_READINGS_URL);
   Serial.println(url);
 
   http.setTimeout(12000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if(!http.begin(client,url)){apiStatus="THTTP";return false;}
 
   int code=http.GET();
