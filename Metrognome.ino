@@ -51,11 +51,17 @@ struct WeatherData {
 };
 
 struct LightningData{
-  bool active=true;
-  int strikeCount=12;
-  float nearestKm=34.0;
-  const char* direction="NW";
-  int risk=3;
+  bool active=false;
+  int strikeCount=0;
+  float nearestKm=0.0;
+  String direction="--";
+  int risk=0;
+  float azimuthDeg=0.0;
+  float headingDeg=0.0;
+  float relativeDeg=0.0;
+  int servoAngle=90;
+  String status="READY";
+  String lastUpdate="never";
 };
 
 WeatherData weather;
@@ -63,6 +69,10 @@ LightningData lightning;
 
 void smallStatus();
 void drawBig();
+bool connectBestWiFi();
+String utcTimeShort();
+void setupLightningVane();
+void updateLightningPage();
 
 float firstSource(JsonVariant v) {
   if (v.isNull()) return NAN;
@@ -304,6 +314,7 @@ void checkEncoder(){
   if(!swDown && buttonDown && now-lastButton>50){
     buttonDown=false; lastButton=now; pressNotice=true; pressUntil=now+1200;
     if(page==SYSTEM) fetchStormglass();
+    if(page==LIGHTNING) updateLightningPage();
   }
   if(pressNotice && now>pressUntil) pressNotice=false;
 }
@@ -385,22 +396,37 @@ void drawMoon(){
 
 void drawLightning(){
   bigDisplay.clearBuffer(); header("LIGHT");
-  bigDisplay.setFont(u8g2_font_6x12_tf);
-  bigDisplay.drawStr(0,27,"Nearest strike");
-  bigDisplay.setFont(u8g2_font_7x14B_tf);
-  bigDisplay.setCursor(0,45); bigDisplay.print(lightning.direction); bigDisplay.print(" "); bigDisplay.print(lightning.nearestKm,0); bigDisplay.print("km");
   bigDisplay.setFont(u8g2_font_6x10_tf);
-  bigDisplay.setCursor(0,60); bigDisplay.print(lightning.strikeCount); bigDisplay.print(" strikes/hr RISK HIGH");
-  bigDisplay.drawCircle(103,38,21);
-  bigDisplay.drawCircle(103,38,12);
-  bigDisplay.drawLine(103,17,103,59);
-  bigDisplay.drawLine(82,38,124,38);
-  bigDisplay.drawCircle(103,38,((frame*3)%18)+2);
-  int sx=96+((frame*5)%18);
-  int sy=25+((frame*7)%25);
-  bigDisplay.drawLine(sx,sy,sx-5,sy+8);
-  bigDisplay.drawLine(sx-5,sy+8,sx+1,sy+8);
-  bigDisplay.drawLine(sx+1,sy+8,sx-6,sy+18);
+  bigDisplay.drawStr(0,24,"Nearest strike");
+
+  bigDisplay.setFont(u8g2_font_7x14B_tf);
+  bigDisplay.setCursor(0,41);
+  if(lightning.active){
+    bigDisplay.print(lightning.direction); bigDisplay.print(" "); bigDisplay.print(lightning.nearestKm,0); bigDisplay.print("km");
+  } else {
+    bigDisplay.print(lightning.status);
+  }
+
+  bigDisplay.setFont(u8g2_font_5x8_tf);
+  bigDisplay.setCursor(0,53); bigDisplay.print("AZ "); bigDisplay.print(lightning.azimuthDeg,0); bigDisplay.print(" HDG "); bigDisplay.print(lightning.headingDeg,0);
+  bigDisplay.setCursor(0,62); bigDisplay.print("REL "); bigDisplay.print(lightning.relativeDeg,0); bigDisplay.print(" SERVO "); bigDisplay.print(lightning.servoAngle); bigDisplay.print(" "); bigDisplay.print(lightning.lastUpdate);
+
+  int cx=104, cy=38;
+  bigDisplay.drawCircle(cx,cy,21);
+  bigDisplay.drawCircle(cx,cy,12);
+  bigDisplay.drawLine(cx,17,cx,59);
+  bigDisplay.drawLine(83,cy,125,cy);
+
+  float a = (lightning.relativeDeg - 90.0) * PI / 180.0;
+  int px = cx + (int)(cos(a) * 19.0);
+  int py = cy + (int)(sin(a) * 19.0);
+  bigDisplay.drawLine(cx, cy, px, py);
+  bigDisplay.drawDisc(px, py, 2);
+
+  if(!lightning.active){
+    bigDisplay.drawCircle(cx,cy,((frame*3)%18)+2);
+  }
+
   bigDisplay.sendBuffer();
 }
 
@@ -410,7 +436,7 @@ void drawSystem(){
   bigDisplay.setCursor(0,24); bigDisplay.print("WiFi "); bigDisplay.print(wifiStatus);
   bigDisplay.setCursor(0,36); bigDisplay.print("API "); bigDisplay.print(apiStatus); bigDisplay.print(" "); bigDisplay.print(callsToday); bigDisplay.print("/"); bigDisplay.print(DAILY_API_LIMIT);
   bigDisplay.setCursor(0,48); bigDisplay.print("Last "); bigDisplay.print(lastUpdate);
-  bigDisplay.setCursor(0,60); bigDisplay.print("PRESS: UPDATE ALL");
+  bigDisplay.setCursor(0,60); bigDisplay.print("PRESS: WEATHER UPDATE");
   bigDisplay.sendBuffer();
 }
 
@@ -442,6 +468,7 @@ void setup(){
   bigDisplay.begin();
   bigDisplay.setBusClock(1000000);
   bigDisplay.setContrast(200);
+  setupLightningVane();
   smallStatus();
   drawBig();
   connectBestWiFi();
