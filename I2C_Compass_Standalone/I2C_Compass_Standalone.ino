@@ -1,196 +1,153 @@
 // I2C_Compass_Standalone.ino
-// Standalone serial diagnostic for ESP32-C3 + mystery HP5883/HMC5883 module.
-// Focuses on the odd device seen at 0x2C when using SDA GPIO6 / SCL GPIO5.
-//
-// No Metrognome display code. No WiFi. No secrets.h.
-// Serial Monitor: 115200 baud.
+// Focused live reader for the mystery device seen at I2C address 0x2C.
+// Use Serial Monitor at 115200 baud.
+// Wiring for this test: SDA -> GPIO6, SCL -> GPIO5, VCC -> 3V3, GND -> GND.
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
 
 constexpr uint8_t SDA_PIN = 6;
 constexpr uint8_t SCL_PIN = 5;
-constexpr uint8_t MYSTERY_ADDR = 0x2C;
+constexpr uint8_t ADDR = 0x2C;
 
-uint8_t lastDump[64];
-bool haveLastDump = false;
+const uint8_t windows[] = {0x00, 0x03, 0x06, 0x09, 0x10, 0x20, 0x30, 0x34};
+const size_t windowCount = sizeof(windows) / sizeof(windows[0]);
+uint8_t lastData[8][6];
+bool haveLast[8];
 
-void printHex2(uint8_t value) {
-  if (value < 16) Serial.print("0");
-  Serial.print(value, HEX);
+void h2(uint8_t v) {
+  if (v < 16) Serial.print('0');
+  Serial.print(v, HEX);
 }
 
-bool scanAddress(uint8_t address) {
+bool ack(uint8_t address) {
   Wire.beginTransmission(address);
-  uint8_t error = Wire.endTransmission();
-  return error == 0;
+  return Wire.endTransmission() == 0;
 }
 
 void scanBus() {
-  Serial.println();
-  Serial.print("=== I2C SCAN SDA GPIO");
-  Serial.print(SDA_PIN);
-  Serial.print(" / SCL GPIO");
-  Serial.print(SCL_PIN);
-  Serial.println(" ===");
-
-  int found = 0;
-  for (uint8_t address = 1; address < 127; address++) {
-    if (scanAddress(address)) {
-      Serial.print("ACK at 0x");
-      printHex2(address);
-      if (address == 0x2C) Serial.print("  MYSTERY DEVICE");
-      if (address == 0x3C) Serial.print("  OLED");
-      if (address == 0x1E) Serial.print("  HMC/HP candidate");
-      if (address == 0x0D) Serial.print("  QMC candidate");
+  Serial.println("\n=== SCAN GPIO6/GPIO5 ===");
+  for (uint8_t a = 1; a < 127; a++) {
+    if (ack(a)) {
+      Serial.print("ACK 0x"); h2(a);
+      if (a == 0x2C) Serial.print(" mystery");
+      if (a == 0x3C) Serial.print(" OLED");
+      if (a == 0x1E) Serial.print(" HMC/HP");
+      if (a == 0x0D) Serial.print(" QMC");
       Serial.println();
-      found++;
     }
   }
-
-  if (found == 0) Serial.println("No I2C devices found");
   Serial.println("=== SCAN END ===");
 }
 
-bool readRegByte(uint8_t addr, uint8_t reg, uint8_t &value) {
-  Wire.beginTransmission(addr);
+bool readBytes(uint8_t reg, uint8_t *buf, uint8_t len) {
+  Wire.beginTransmission(ADDR);
   Wire.write(reg);
-  uint8_t err = Wire.endTransmission(false);
-  if (err != 0) return false;
-
-  uint8_t got = Wire.requestFrom(addr, (uint8_t)1);
-  if (got != 1 || !Wire.available()) return false;
-
-  value = Wire.read();
+  if (Wire.endTransmission(false) != 0) return false;
+  uint8_t got = Wire.requestFrom(ADDR, len);
+  if (got != len) return false;
+  for (uint8_t i = 0; i < len; i++) {
+    if (!Wire.available()) return false;
+    buf[i] = Wire.read();
+  }
   return true;
 }
 
-void writeRegByte(uint8_t addr, uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(addr);
+void writeReg(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ADDR);
   Wire.write(reg);
-  Wire.write(value);
+  Wire.write(val);
   Wire.endTransmission();
 }
 
-void dumpRegisters(uint8_t addr) {
-  Serial.println();
-  Serial.print("=== REGISTER DUMP 0x");
-  printHex2(addr);
-  Serial.println(" regs 0x00-0x3F ===");
+int16_t le(uint8_t a, uint8_t b) { return (int16_t)((uint16_t)a | ((uint16_t)b << 8)); }
+int16_t be(uint8_t a, uint8_t b) { return (int16_t)(((uint16_t)a << 8) | b); }
 
-  uint8_t currentDump[64];
-  bool readOk[64];
+float norm(float x) {
+  while (x < 0) x += 360;
+  while (x >= 360) x -= 360;
+  return x;
+}
 
-  for (uint8_t reg = 0; reg < 64; reg++) {
-    uint8_t value = 0x00;
-    bool ok = readRegByte(addr, reg, value);
-    currentDump[reg] = value;
-    readOk[reg] = ok;
-  }
+void printVec(const char *label, int16_t x, int16_t y, int16_t z) {
+  float hdg = norm(atan2((float)y, (float)x) * 180.0 / PI);
+  Serial.print(label);
+  Serial.print(" X="); Serial.print(x);
+  Serial.print(" Y="); Serial.print(y);
+  Serial.print(" Z="); Serial.print(z);
+  Serial.print(" HDG="); Serial.print(hdg, 1);
+}
 
+bool changed(size_t idx, uint8_t *b) {
+  if (!haveLast[idx]) return false;
+  for (uint8_t i = 0; i < 6; i++) if (lastData[idx][i] != b[i]) return true;
+  return false;
+}
+
+void remember(size_t idx, uint8_t *b) {
+  for (uint8_t i = 0; i < 6; i++) lastData[idx][i] = b[i];
+  haveLast[idx] = true;
+}
+
+void dump64() {
+  Serial.println("\n=== REGS 00-3F ===");
   for (uint8_t row = 0; row < 4; row++) {
     uint8_t start = row * 16;
-    Serial.print("0x");
-    printHex2(start);
-    Serial.print(": ");
-
+    Serial.print("0x"); h2(start); Serial.print(": ");
     for (uint8_t i = 0; i < 16; i++) {
-      uint8_t reg = start + i;
-      if (readOk[reg]) {
-        Serial.print("0x");
-        printHex2(currentDump[reg]);
-      } else {
-        Serial.print("----");
-      }
-
-      if (haveLastDump && readOk[reg] && currentDump[reg] != lastDump[reg]) {
-        Serial.print("*");
-      } else {
-        Serial.print(" ");
-      }
+      uint8_t b;
+      if (readBytes(start + i, &b, 1)) { Serial.print("0x"); h2(b); }
+      else Serial.print("----");
+      Serial.print(' ');
     }
     Serial.println();
   }
-
-  memcpy(lastDump, currentDump, 64);
-  haveLastDump = true;
-  Serial.println("* means changed since last dump");
-  Serial.println("=== DUMP END ===");
 }
 
-void tryKnownInitSequences(uint8_t addr) {
-  Serial.println();
-  Serial.println("Trying known compass init sequences against 0x2C...");
+void readWindows() {
+  Serial.println("\n=== LIVE WINDOWS: rotate board and watch CHANGED ===");
+  for (size_t idx = 0; idx < windowCount; idx++) {
+    uint8_t reg = windows[idx];
+    uint8_t b[6];
+    Serial.print("WIN 0x"); h2(reg); Serial.print(": ");
+    if (!readBytes(reg, b, 6)) { Serial.println("read failed"); continue; }
 
-  Serial.println("Trying HMC-style init registers 0x00/0x01/0x02");
-  writeRegByte(addr, 0x00, 0x70);
-  writeRegByte(addr, 0x01, 0x20);
-  writeRegByte(addr, 0x02, 0x00);
-  delay(100);
-  dumpRegisters(addr);
+    bool ch = changed(idx, b);
+    for (uint8_t i = 0; i < 6; i++) { Serial.print("0x"); h2(b[i]); Serial.print(' '); }
+    Serial.print(ch ? " CHANGED | " : " stable  | ");
 
-  Serial.println("Trying QMC-style init registers 0x0B/0x09");
-  writeRegByte(addr, 0x0B, 0x01);
-  writeRegByte(addr, 0x09, 0b00011101);
-  delay(100);
-  dumpRegisters(addr);
-}
-
-void tryRawBurstRead(uint8_t addr) {
-  Serial.println();
-  Serial.print("Raw requestFrom 0x");
-  printHex2(addr);
-  Serial.println(" without register pointer:");
-
-  uint8_t got = Wire.requestFrom(addr, (uint8_t)16);
-  Serial.print("got ");
-  Serial.print(got);
-  Serial.print(" bytes: ");
-
-  while (Wire.available()) {
-    uint8_t b = Wire.read();
-    Serial.print("0x");
-    printHex2(b);
-    Serial.print(" ");
+    printVec("LE", le(b[0],b[1]), le(b[2],b[3]), le(b[4],b[5]));
+    Serial.print(" | ");
+    printVec("BE", be(b[0],b[1]), be(b[2],b[3]), be(b[4],b[5]));
+    Serial.println();
+    remember(idx, b);
   }
-  Serial.println();
+}
+
+void tryInit() {
+  Serial.println("\nTrying HMC-like init");
+  writeReg(0x00, 0x70); writeReg(0x01, 0x20); writeReg(0x02, 0x00); delay(100);
+  dump64(); readWindows();
+
+  Serial.println("\nTrying QMC-like init");
+  writeReg(0x0B, 0x01); writeReg(0x09, 0x1D); delay(100);
+  dump64(); readWindows();
 }
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
-
-  Serial.println();
-  Serial.println("Mystery 0x2C I2C Interrogator");
-  Serial.println("Expected wiring for this test:");
-  Serial.println("  Compass SDA -> GPIO6");
-  Serial.println("  Compass SCL -> GPIO5");
-  Serial.println("  Compass VCC -> 3V3");
-  Serial.println("  Compass GND -> GND");
-  Serial.println("Serial Monitor: 115200 baud");
-
+  Serial.println("Mystery 0x2C live reader");
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(50000);
-
   scanBus();
-
-  if (scanAddress(MYSTERY_ADDR)) {
-    Serial.println("0x2C ACKed. Interrogating it now.");
-    dumpRegisters(MYSTERY_ADDR);
-    tryRawBurstRead(MYSTERY_ADDR);
-    tryKnownInitSequences(MYSTERY_ADDR);
-  } else {
-    Serial.println("0x2C did not ACK on this boot.");
-  }
+  if (ack(ADDR)) { dump64(); tryInit(); }
+  else Serial.println("0x2C did not ACK");
 }
 
 void loop() {
-  if (scanAddress(MYSTERY_ADDR)) {
-    dumpRegisters(MYSTERY_ADDR);
-    tryRawBurstRead(MYSTERY_ADDR);
-  } else {
-    Serial.println("0x2C not ACKing now.");
-  }
-
-  delay(1500);
+  if (ack(ADDR)) readWindows();
+  else Serial.println("0x2C not ACKing now");
+  delay(1200);
 }
