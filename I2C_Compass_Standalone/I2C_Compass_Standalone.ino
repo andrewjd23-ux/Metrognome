@@ -1,4 +1,5 @@
 // I2C_Compass_Standalone.ino
+// V2 MARKER: 0x2C LIVE WINDOW READER - if you see this, the update reached GitHub.
 // Focused live reader for the mystery device seen at I2C address 0x2C.
 // Use Serial Monitor at 115200 baud.
 // Wiring for this test: SDA -> GPIO6, SCL -> GPIO5, VCC -> 3V3, GND -> GND.
@@ -138,6 +139,7 @@ void tryInit() {
 void setup() {
   Serial.begin(115200);
   delay(2000);
+  Serial.println("V2 MARKER: 0x2C LIVE WINDOW READER");
   Serial.println("Mystery 0x2C live reader");
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(50000);
