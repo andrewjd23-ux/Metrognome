@@ -12,6 +12,10 @@
 // Optional direct lightning feed:
 //   const char* LIGHTNING_FEED_URL = "http://example.local/lightning.json";
 // If LIGHTNING_FEED_URL is absent or empty, LIGHT mode uses a demo strike.
+//
+// Optional tide feed, tested against simple Environment Agency-style readings JSON:
+//   const char* EA_TIDE_READINGS_URL = "https://environment.data.gov.uk/flood-monitoring/id/stations/YOUR_ID/readings?latest";
+//   const char* EA_TIDE_LABEL = "Avonmouth";
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -29,6 +33,26 @@
 
 #ifndef LIGHTNING_FEED_URL
 #define LIGHTNING_FEED_URL ""
+#endif
+
+#ifndef EA_TIDE_READINGS_URL
+  #ifdef EA_TIDE_URL
+    #define EA_TIDE_READINGS_URL EA_TIDE_URL
+  #elif defined(TIDE_API_URL)
+    #define EA_TIDE_READINGS_URL TIDE_API_URL
+  #elif defined(TIDE_READINGS_URL)
+    #define EA_TIDE_READINGS_URL TIDE_READINGS_URL
+  #else
+    #define EA_TIDE_READINGS_URL ""
+  #endif
+#endif
+
+#ifndef EA_TIDE_LABEL
+  #ifdef TIDE_LABEL
+    #define EA_TIDE_LABEL TIDE_LABEL
+  #else
+    #define EA_TIDE_LABEL "TIDE"
+  #endif
 #endif
 
 constexpr uint8_t PIN_I2C_SDA = 5;
@@ -96,6 +120,18 @@ struct WeatherData {
   float waterTemp = 0;
 };
 
+struct TideData {
+  bool valid = false;
+  String status = "READY";
+  String label = EA_TIDE_LABEL;
+  float latestLevel = NAN;
+  float previousLevel = NAN;
+  String latestTime = "--:--";
+  String previousTime = "--:--";
+  String trend = "--";
+  String lastUpdate = "never";
+};
+
 struct LightningData {
   bool active = false;
   int strikeCount = 0;
@@ -111,6 +147,7 @@ struct LightningData {
 };
 
 WeatherData weather;
+TideData tide;
 LightningData lightning;
 
 void smallStatus();
@@ -208,6 +245,13 @@ String utcTimeShort() {
   char buf[6];
   strftime(buf, sizeof(buf), "%H:%M", &t);
   return String(buf);
+}
+
+String shortTimeFromIso(const String& iso) {
+  int t = iso.indexOf('T');
+  if (t >= 0 && iso.length() >= t + 6) return iso.substring(t + 1, t + 6);
+  if (iso.length() >= 5) return iso.substring(0, 5);
+  return "--:--";
 }
 
 void loadApiCounter() {
@@ -438,6 +482,167 @@ bool fetchStormglass() {
   return true;
 }
 
+bool readTideItem(JsonVariant item, String& timeOut, float& levelOut) {
+  JsonVariant v = item;
+  if (item["properties"].is<JsonObject>()) v = item["properties"];
+
+  const char* t = nullptr;
+  if (!v["dateTime"].isNull()) t = v["dateTime"].as<const char*>();
+  else if (!v["datetime"].isNull()) t = v["datetime"].as<const char*>();
+  else if (!v["time"].isNull()) t = v["time"].as<const char*>();
+  else if (!v["timestamp"].isNull()) t = v["timestamp"].as<const char*>();
+  if (t == nullptr) return false;
+
+  float level = NAN;
+  if (!v["value"].isNull()) level = v["value"].as<float>();
+  else if (!v["level"].isNull()) level = v["level"].as<float>();
+  else if (!v["height"].isNull()) level = v["height"].as<float>();
+  else if (!v["tideHeight"].isNull()) level = v["tideHeight"].as<float>();
+  if (isnan(level)) return false;
+
+  timeOut = String(t);
+  levelOut = level;
+  return true;
+}
+
+bool fetchTide() {
+  String url = String(EA_TIDE_READINGS_URL);
+  url.trim();
+
+  if (url.length() == 0) {
+    tide.valid = false;
+    tide.status = "NO TIDE URL";
+    apiStatus = "TIDE URL";
+    return false;
+  }
+
+  if (!wifiOk) {
+    apiStatus = "WIFI";
+    if (!connectBestWiFi()) {
+      tide.valid = false;
+      tide.status = "WIFI FAIL";
+      return false;
+    }
+  }
+
+  apiStatus = "TIDE";
+  smallStatus();
+  drawBig();
+
+  HTTPClient http;
+  http.setTimeout(12000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  bool begun = false;
+  WiFiClientSecure secureClient;
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    begun = http.begin(secureClient, url);
+  } else {
+    begun = http.begin(url);
+  }
+
+  if (!begun) {
+    tide.valid = false;
+    tide.status = "HTTP";
+    apiStatus = "TIDE HTTP";
+    return false;
+  }
+
+  http.addHeader("Accept", "application/json");
+  int code = http.GET();
+  Serial.print("Tide HTTP code: "); Serial.println(code);
+  if (code != 200) {
+    http.end();
+    tide.valid = false;
+    tide.status = "HTTP ERR";
+    apiStatus = "TIDE ERR";
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+  if (payload.length() == 0) {
+    tide.valid = false;
+    tide.status = "EMPTY";
+    apiStatus = "TIDE EMPTY";
+    return false;
+  }
+
+  DynamicJsonDocument doc(32768);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.print("Tide JSON error: "); Serial.println(err.c_str());
+    tide.valid = false;
+    tide.status = "JSON";
+    apiStatus = "TIDE JSON";
+    return false;
+  }
+
+  JsonArray items;
+  if (doc.is<JsonArray>()) items = doc.as<JsonArray>();
+  else if (doc["items"].is<JsonArray>()) items = doc["items"].as<JsonArray>();
+  else if (doc["readings"].is<JsonArray>()) items = doc["readings"].as<JsonArray>();
+  else if (doc["data"].is<JsonArray>()) items = doc["data"].as<JsonArray>();
+  else if (doc["features"].is<JsonArray>()) items = doc["features"].as<JsonArray>();
+  else {
+    tide.valid = false;
+    tide.status = "NO ARRAY";
+    apiStatus = "TIDE ARRAY";
+    return false;
+  }
+
+  String bestTime = "";
+  String prevTime = "";
+  float bestLevel = NAN;
+  float prevLevel = NAN;
+
+  for (JsonVariant item : items) {
+    String itemTime;
+    float itemLevel = NAN;
+    if (!readTideItem(item, itemTime, itemLevel)) continue;
+
+    if (bestTime == "" || itemTime > bestTime) {
+      prevTime = bestTime;
+      prevLevel = bestLevel;
+      bestTime = itemTime;
+      bestLevel = itemLevel;
+    } else if (prevTime == "" || itemTime > prevTime) {
+      prevTime = itemTime;
+      prevLevel = itemLevel;
+    }
+  }
+
+  if (bestTime == "" || isnan(bestLevel)) {
+    tide.valid = false;
+    tide.status = "NO DATA";
+    apiStatus = "TIDE DATA";
+    return false;
+  }
+
+  tide.valid = true;
+  tide.status = "OK";
+  tide.latestLevel = bestLevel;
+  tide.previousLevel = prevLevel;
+  tide.latestTime = shortTimeFromIso(bestTime);
+  tide.previousTime = shortTimeFromIso(prevTime);
+  tide.lastUpdate = utcTimeShort();
+
+  if (!isnan(prevLevel)) {
+    float delta = bestLevel - prevLevel;
+    if (delta > 0.03) tide.trend = "RISING";
+    else if (delta < -0.03) tide.trend = "FALLING";
+    else tide.trend = "STEADY";
+  } else {
+    tide.trend = "LATEST";
+  }
+
+  apiStatus = "TIDE OK";
+  Serial.println("Tide update OK.");
+  Serial.print("Tide latest "); Serial.print(tide.latestLevel); Serial.print("m at "); Serial.println(tide.latestTime);
+  return true;
+}
+
 bool setLightningFromStrike(double strikeLat, double strikeLon, int strikeCount, const String& status) {
   lightning.nearestKm = distanceKmBetween(METROGNOME_LAT, METROGNOME_LON, strikeLat, strikeLon);
   lightning.azimuthDeg = bearingDegBetween(METROGNOME_LAT, METROGNOME_LON, strikeLat, strikeLon);
@@ -643,6 +848,7 @@ void checkEncoder() {
     pressNotice = true;
     pressUntil = now + 1200;
     if (page == SYSTEM) fetchStormglass();
+    if (page == TIDE) fetchTide();
     if (page == LIGHTNING) updateLightningPage();
   }
   if (pressNotice && now > pressUntil) pressNotice = false;
@@ -703,13 +909,35 @@ void drawSea() {
 
 void drawTide() {
   bigDisplay.clearBuffer(); header("TIDE");
-  bigDisplay.setFont(u8g2_font_6x12_tf);
-  bigDisplay.drawStr(0, 28, "HIGH  --:--");
-  bigDisplay.drawStr(0, 43, "LOW   --:--");
-  bigDisplay.drawStr(0, 58, "TIDE API LATER");
-  bigDisplay.drawFrame(82, 18, 38, 40);
-  uint8_t h = 8 + ((frame / 2) % 28);
-  bigDisplay.drawBox(88, 58 - h, 26, h);
+  bigDisplay.setFont(u8g2_font_6x10_tf);
+  bigDisplay.setCursor(0, 23); bigDisplay.print(tide.label);
+
+  if (tide.valid) {
+    bigDisplay.setFont(u8g2_font_7x14B_tf);
+    bigDisplay.setCursor(0, 42);
+    bigDisplay.print(tide.latestLevel, 2); bigDisplay.print("m");
+
+    bigDisplay.setFont(u8g2_font_5x8_tf);
+    bigDisplay.setCursor(72, 30); bigDisplay.print(tide.trend);
+    bigDisplay.setCursor(72, 41); bigDisplay.print(tide.latestTime);
+    bigDisplay.setCursor(0, 54); bigDisplay.print("Prev "); bigDisplay.print(tide.previousTime);
+    if (!isnan(tide.previousLevel)) { bigDisplay.print(" "); bigDisplay.print(tide.previousLevel, 2); bigDisplay.print("m"); }
+    bigDisplay.setCursor(0, 63); bigDisplay.print("Upd "); bigDisplay.print(tide.lastUpdate);
+
+    bigDisplay.drawFrame(106, 18, 16, 42);
+    float levelForBar = constrain(tide.latestLevel, 0.0f, 8.0f);
+    uint8_t h = (uint8_t)(levelForBar / 8.0f * 38.0f);
+    bigDisplay.drawBox(109, 58 - h, 10, h);
+  } else {
+    bigDisplay.setFont(u8g2_font_6x12_tf);
+    bigDisplay.setCursor(0, 39); bigDisplay.print(tide.status);
+    bigDisplay.setFont(u8g2_font_5x8_tf);
+    bigDisplay.setCursor(0, 55); bigDisplay.print("Press TIDE to update");
+    bigDisplay.drawFrame(82, 18, 38, 40);
+    uint8_t h = 8 + ((frame / 2) % 28);
+    bigDisplay.drawBox(88, 58 - h, 26, h);
+  }
+
   bigDisplay.sendBuffer();
 }
 
@@ -764,7 +992,7 @@ void drawSystem() {
   bigDisplay.setCursor(0, 24); bigDisplay.print("WiFi "); bigDisplay.print(wifiStatus);
   bigDisplay.setCursor(0, 36); bigDisplay.print("API "); bigDisplay.print(apiStatus); bigDisplay.print(" "); bigDisplay.print(callsToday); bigDisplay.print("/"); bigDisplay.print(DAILY_API_LIMIT);
   bigDisplay.setCursor(0, 48); bigDisplay.print("Last "); bigDisplay.print(lastUpdate);
-  bigDisplay.setCursor(0, 60); bigDisplay.print("PRESS: WEATHER UPDATE");
+  bigDisplay.setCursor(0, 60); bigDisplay.print("Press page button");
   bigDisplay.sendBuffer();
 }
 
